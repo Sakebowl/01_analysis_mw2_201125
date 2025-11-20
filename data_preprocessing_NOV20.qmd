@@ -1,0 +1,322 @@
+---
+title: "Data preprocessing (November 20)"
+author: "Miha Likar"
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    number-sections: true
+    toc-expand: true
+editor: visual
+---
+
+```{r, message = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(janitor)
+library(mpathr)
+```
+
+# Overview
+
+This is a script for preparing code for mind wandering study 2 analysis. Primary focus is pre-processing of EMA questionnaires data.
+
+We have to:
+
+-   load the data
+-   clean aliases
+-   create measuring dates and days
+-   create relative sample times
+-   create standardised data
+
+# Questionnaire data
+
+Import data
+
+```{r}
+questionnaires <- read_csv("/Users/Intragalactic/Downloads/prior_questionnaires_MW2_final_2025.+november+7._16.01.csv")
+```
+
+Calculate MEQ scores (Q12 - Q24)
+
+```{r}
+questionnaires_meq_sum <- questionnaires %>%
+  slice(c(-1,-2)) %>%
+  filter(!is.na(Q12)) %>%
+  mutate(across(c(Q12:Q24), as.numeric)) %>%
+  rowwise() %>%
+  mutate(MEQ_total = sum(c_across(Q12:Q24), na.rm = TRUE)) %>%
+  ungroup() %>%
+  select(Q9, MEQ_total) %>%
+  rename(alias = Q9)
+
+```
+
+# Pre-processing
+
+## Import the data
+
+```{r}
+mw_raw <- read_csv2("/Users/Intragalactic/Documents/PhD ELTE/Year 2/Lab/Mind wandering 2 study/Credit point calculation/questionnaire_creditcalc_NOV4.csv")
+```
+
+Inspect structure
+
+```{r}
+glimpse(mw_raw)
+```
+
+## Recode "alias" to anonymous ID and remove redundant participants
+
+```{r}
+mw_raw <- mw_raw %>%
+  distinct(alias) %>%
+  mutate(ID = paste0("P0",sample(n(), n(), replace = FALSE))) %>%
+  left_join(mw_raw, by = "alias")
+
+mw_raw <- mw_raw %>%
+  relocate(ID, .after = "alias")
+
+mw_raw <- mw_raw %>%
+  filter(alias != "Miha")
+
+
+mw_raw %>%
+  summarise(n_distinct(ID))
+```
+
+# Join with MEQ scores
+
+```{r}
+mw_raw <- mw_raw %>%
+  mutate(alias = case_when(alias == "SE04773179" ~ "GK8QAL",
+                           alias == "SE13778731" ~ 	"XUIU0P",
+                           alias == "SE13772746" ~ 	"IGGVX2",
+                           alias == "Tunde" ~ "K5BBWV",
+                           TRUE ~ alias))
+
+unique_aliases <- mw_raw %>%
+  distinct(alias) %>%
+  pull()
+```
+
+```{r}
+mw_raw <- questionnaires_meq_sum %>%
+  filter(alias %in% unique_aliases) %>%
+  group_by(alias) %>%
+  slice(1) %>%
+  left_join(mw_raw, by = "alias") %>%
+  relocate(MEQ_total, .after = last_col()) %>%
+  ungroup()
+```
+
+## MEQ grouping
+
+```{r}
+mw_raw <- mw_raw %>%
+  mutate(MEQ_group = case_when(MEQ_total < 30 ~ "Evening",
+                               MEQ_total >= 30 & MEQ_total < 39 ~ "Intermediate",
+                               MEQ_total >= 39 ~ "Morning"))
+
+mw_raw %>% 
+  distinct(alias, MEQ_group) %>%
+  count(MEQ_group)
+```
+
+## Remove computational rows of data
+
+```{r}
+mw_raw_computational_to_remove <- mw_raw %>%
+  filter(!is.na(timeStampStop) & is.na(mw_binary_yesno))
+
+mw_raw_computational_to_remove %>%
+  count(ID)
+
+mw_raw <- anti_join(mw_raw, mw_raw_computational_to_remove)
+
+```
+
+## Samples per participants
+
+3 Participants have 99 samples in total. 3 samples are thus missing due to technical errors.
+
+```{r}
+mw_raw %>%
+  count(ID) %>%
+  count(n)
+```
+
+```{r}
+mw_raw %>%
+  filter(ID == "P055")
+```
+
+## Response rate per participant
+
+Calculate response rate and extract participants with less than 50% response rate to remove them.
+
+```{r}
+participants_to_remove <- mw_raw %>%
+  group_by(ID) %>%
+  summarise(n_samples = n(),
+            n_responded = sum(!is.na(mw_binary_yesno)),
+            response_rate = n_responded/n_samples) %>%
+  filter(response_rate < 0.5) %>%
+  pull(ID)
+```
+
+## Filter participants below threshold
+
+```{r}
+mw_raw <- mw_raw %>%
+  filter(!ID %in% participants_to_remove)
+```
+
+### Reponse rate, mind wandering rate per participant.
+
+```{r}
+mw_raw %>%
+  group_by(ID) %>%
+  summarise(n_samples = n(),
+            n_responded = sum(!is.na(mw_binary_yesno)),
+            response_rate = n_responded/n_samples,
+            mw_rate = sum(mw_binary_yesno == 1, na.rm = TRUE)/n_responded) %>%
+  ggplot(aes(mw_rate)) +
+  geom_histogram() + 
+  theme_minimal() + 
+  labs(x = "Mind wandering rate (%)", y = NULL, title = "Individual mind wandering rate (yes mw/all responses) distribution")
+```
+
+## Convert UNIX time to standardised time format
+
+```{r}
+mw_raw <- mw_raw %>%
+  mutate(
+    timeStampSent_std = timestamps_to_datetime(timeStampSent, tz_offset = NULL, force_tz = NULL),
+    timeStampStop_std = timestamps_to_datetime(timeStampStop, tz_offset = NULL, force_tz = NULL),
+         ) %>%
+  relocate(timeStampSent_std, .after = timeStampSent) %>%
+  relocate(timeStampStop_std, .after = timeStampStop)
+```
+
+## Assign measuring dates
+
+```{r}
+mw_raw <- mw_raw %>%
+  mutate(measurement_date = ifelse(format(timeStampSent_std, format = "%H:%M") >= "05:00",
+                                   format(timeStampSent_std, format = "%Y-%m-%d"),
+                                   format(timeStampSent_std - lubridate::hours(24), format = "%Y-%m-%d")))
+
+mw_raw <- mw_raw %>% relocate(measurement_date, .after=timeStampStop_std)
+```
+
+## Assign measuring days (aka day #)
+
+```{r}
+mw_raw <- mw_raw %>%
+  mutate(measurement_date = as.Date(measurement_date)) %>%
+  group_by(ID) %>%
+  mutate(measurement_day = as.numeric(measurement_date - min(measurement_date, na.rm = TRUE)) + 1) %>%
+  ungroup() %>%
+  relocate(measurement_day, .after = measurement_date)
+```
+
+## Calculate wake-up and bedtimes
+
+We need to extract wake-up and bedtimes for each day for each participants and join them back to original dataframe. We need to transform them to standardised time (first add midnight time)
+
+```{r}
+individual_sleep_calculations <- mw_raw %>%
+  distinct(ID, measurement_date, wu_1_time, bed_1_time) %>%
+  filter(!is.na(wu_1_time)) %>%
+  mutate(measurement_date_midnight = as.numeric(as.POSIXct(measurement_date, format = "%Y-%m-%d", tz = "UTC")),
+         full_wu_time = wu_1_time + measurement_date_midnight,
+         full_wu_time_std = timestamps_to_datetime(full_wu_time, 
+                                                    tz_offset = NULL, 
+                                                    force_tz = NULL),
+         wu_time_std = format(full_wu_time_std, format = "%H:%M"),
+         bedtime_date_midnight = ifelse(bed_1_time > 36000,
+            as.numeric(as.POSIXct(measurement_date-1, format = "%Y-%m-%d", tz = "UTC")),
+            as.numeric(as.POSIXct(measurement_date, format = "%Y-%m-%d", tz = "UTC"))),
+         full_bt_time = bed_1_time + bedtime_date_midnight,
+         full_bt_time_std = timestamps_to_datetime(full_bt_time, 
+                                                    tz_offset = NULL, 
+                                                    force_tz = NULL),
+         bt_time_std = format(full_bt_time_std, format = "%H:%M"),
+            ) %>%
+  select(-measurement_date_midnight) %>%
+  mutate(bedtime_int = bed_1_time/3600,
+         sleep_duration = (full_wu_time - full_bt_time)/3600)
+
+individual_sleep_calculations
+```
+
+Based on data inspection I conculde a few things:
+
+-   there seem to be legitimate bedtimes until 10:00 in the morning (used for bedtime midnight calculation)
+-   based on sleep_durations and wu and bt, it seems that some data is faulty - either weirdly similar times are entered (automatic responding?) or bedtimes seem to be entered in 12h instead of 24h format, thus leading to bedtimes such as 12:25 instead od 00:25
+
+Based on this inspection I decide that data with sleep durations higher than 13h and exactly 0h should (perhaps) be removed. These datapoints might have false wake up and bedtimes and could lead to false calculations in relative sample times
+
+### DF copy
+
+Make a copy of the data here
+
+```{r}
+mw_raw_copy_1 <- mw_raw
+```
+
+### Joining sleep calculation data back to original dataframe
+
+```{r}
+mw_raw$bed_1_time <- NULL
+mw_raw$bed_2_time <- NULL
+mw_raw$wu_1_time <- NULL
+mw_raw$wu_2_time <- NULL
+
+mw_raw <- mw_raw %>% 
+  left_join(individual_sleep_calculations, by = c("ID", "measurement_date"))
+```
+
+## Calculating relative sample times
+
+```{r}
+mw_raw <- mw_raw %>%
+  mutate(sample_time = format(timeStampStop_std, format = "%H:%M"),
+         relative_sample_time = (timeStampStop - full_wu_time)/3600)
+
+```
+
+## Filtering
+
+Filter out:
+
+-   relative sample times \< 0 & \> 20
+-   sleep durations \> 0.01 & \< 14
+
+Total removed (datapoints): 230
+
+```{r}
+mw_clean_dur_rel <- mw_raw %>%
+  filter(sleep_duration < 14 & sleep_duration > 0.01) %>%
+  filter(is.na(relative_sample_time) | relative_sample_time > 0 & relative_sample_time < 20)
+```
+
+## Cleaning variabels column names
+
+```{r}
+mw_clean_dur_rel <- mw_clean_dur_rel %>% 
+  rename_with(~ str_remove(.x, "_sliderNeutralPos"))
+```
+
+# Playing around with data viz
+
+### Calculate temporal proportions
+
+```{r}
+mw_clean_dur_rel <- mw_clean_dur_rel %>%
+  mutate(total_temporal = future + past + present) %>%
+  mutate(future_prop = future/total_temporal,
+         present_prop = present/total_temporal,
+         past_prop = past/total_temporal)
+```
