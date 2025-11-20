@@ -15,13 +15,21 @@ library(tidyverse)
 library(ggplot2)
 library(janitor)
 library(mpathr)
+library(psych)
 ```
 
 # Overview
 
-This is a script for preparing code for mind wandering study 2 analysis. Primary focus is pre-processing of EMA questionnaires data.
+In this script, data processing for "Mind wandering 2" study is done. EMA questionnaire data and Qualtrics questionnaire data are pre-processed separately and merged.
 
-We have to:
+Qualtrics steps:
+
+- clean rows
+- keep only first instance of each participant
+- calculate scores across columns (AIS, GHQ, MEQ)
+
+
+EMA steps:
 
 -   load the data
 -   clean aliases
@@ -34,148 +42,228 @@ We have to:
 Import data
 
 ```{r}
-questionnaires <- read_csv("/Users/Intragalactic/Downloads/prior_questionnaires_MW2_final_2025.+november+7._16.01.csv")
+questionnaires_nov20 <- read_csv("/Users/Intragalactic/Documents/PhD ELTE/Year 2/Lab/Mind wandering 2 study/Analyses/99. Data/01_full_data_NOV20/prior_questionnaires_MW2_final_NOV20.csv")
 ```
 
-Calculate MEQ scores (Q12 - Q24)
+Create an editing copy
+```{r}
+questionnaires_edit <- questionnaires_nov20
+```
+
+
+Clean rows
+
+Remove the following:
+
+- first two rows (random headers)
+- all data where last question is missing - means that the questionnaire was not completed
 
 ```{r}
-questionnaires_meq_sum <- questionnaires %>%
-  slice(c(-1,-2)) %>%
-  filter(!is.na(Q12)) %>%
+questionnaires_edit <- questionnaires_edit %>%
+  slice(-c(1,2)) %>%
+  filter(!Q9 %in% c("XXXXX", "PK2MSB")) %>%
+  filter(!is.na(Q46)) %>%
+  group_by(Q9) %>%
+  slice(1) %>%
+  ungroup() %>%
+  rename(alias = Q9)
+```
+
+
+Calculate MEQ scores (Q12 - Q24) --> (possible min = 10, max = 59)
+```{r}
+questionnaires_edit <- questionnaires_edit %>%
   mutate(across(c(Q12:Q24), as.numeric)) %>%
   rowwise() %>%
   mutate(MEQ_total = sum(c_across(Q12:Q24), na.rm = TRUE)) %>%
   ungroup() %>%
-  select(Q9, MEQ_total) %>%
-  rename(alias = Q9)
-
+  mutate(MEQ_group = case_when(
+    MEQ_total < interp.quantiles(MEQ_total, q=0.25) ~ "evening",
+    MEQ_total >= interp.quantiles(MEQ_total, q=0.25) & 
+    MEQ_total <= interp.quantiles(MEQ_total, q=0.75) ~ "intermediate",
+    MEQ_total > interp.quantiles(MEQ_total, q=0.75) ~ "morning",
+    TRUE ~ NA_character_
+  ))
+)
 ```
 
-# Pre-processing
+Extracting and inferring preferred wake-up and bedtimes
+```{r}
+questionnaires_edit <- questionnaires_edit %>%
+  mutate(pref_wu = case_when(as.numeric(Q12) == 0 ~ 13,
+                                                  as.numeric(Q12) == 1 ~ 11.5,
+                                                  as.numeric(Q12) == 2 ~ (9.75 + 11)/2,
+                                                  as.numeric(Q12) == 3 ~ (7.75 + 9.75)/2,
+                                                  as.numeric(Q12) == 4 ~ (6.5+7.75)/2,
+                                                  as.numeric(Q12) == 5 ~ 5.5
+                             )) %>%
+  mutate(pref_bt = case_when(as.numeric(Q13) == 0 ~ 28,
+                             as.numeric(Q13) == 1 ~ (25.75 + 27)/2,
+                             as.numeric(Q13) == 2 ~ (24.5 + 25.75)/2,
+                             as.numeric(Q13) == 3 ~ (22.25 + 24.5)/2,
+                             as.numeric(Q13) == 4 ~ (21+22.25)/2,
+                             as.numeric(Q13) == 5 ~ 20.5))
+```
+
+
+Calculate AIS scores
+
+```{r}
+questionnaires_edit <- questionnaires_edit %>%
+  mutate(across(c(Q26:Q37), as.numeric)) %>%
+  rowwise() %>%
+  mutate(GHQ_total = sum(c_across(Q26:Q37), na.rm = TRUE)) %>%
+  ungroup()
+```
+
+
+Calculate GHQ-12 scores
+```{r}
+questionnaires_edit <- questionnaires_edit %>%
+  mutate(across(c(Q39:Q46), as.numeric)) %>%
+  rowwise() %>%
+  mutate(AIS_total = sum(c_across(Q39:Q46), na.rm = TRUE)) %>%
+  ungroup()
+```
+
+Renaming sex and age columns
+```{r}
+questionnaires_edit <- questionnaires_edit %>%
+  rename(sex = Q1,
+         age = Q5,
+         occupation = Q6,
+         education = Q7,
+         traumatic_event = Q8,
+         medication = Q52)
+```
+
+Cleaning columns:
+
+Full final dataframe:
+```{r}
+full_final_questionnaire_df <- questionnaires_edit %>%
+  select(alias, sex, age, occupation, education, traumatic_event, medication, 
+         MEQ_total, MEQ_group, GHQ_total, AIS_total, pref_wu, pref_bt)
+```
+
+
+Reduced version (only sex and age of demo. data)
+```{r}
+reduced_final_questionnaire_df <- questionnaires_edit %>%
+  select(alias, sex, age, 
+         MEQ_total, MEQ_group, GHQ_total, AIS_total, pref_wu, pref_bt)
+```
+
+## Exporting questionnaire data
+
+Full df
+```{r}
+write_csv(full_final_questionnaire_df, "full_final_questionnaire_df_NOV20.csv")
+```
+
+Reduced df
+```{r}
+write_csv(reduced_final_questionnaire_df, "reduced_final_questionnaire_df_NOV20.csv")
+```
+
+
+
+
+# EMA pre-processing
 
 ## Import the data
 
 ```{r}
-mw_raw <- read_csv2("/Users/Intragalactic/Documents/PhD ELTE/Year 2/Lab/Mind wandering 2 study/Credit point calculation/questionnaire_creditcalc_NOV4.csv")
-```
-
-Inspect structure
-
-```{r}
-glimpse(mw_raw)
+mw_raw_nov20 <- read_csv2("/Users/Intragalactic/Documents/PhD ELTE/Year 2/Lab/Mind wandering 2 study/Analyses/99. Data/01_full_data_NOV20/questionnaire_data_nov20.csv")
 ```
 
 ## Recode "alias" to anonymous ID and remove redundant participants
 
 ```{r}
-mw_raw <- mw_raw %>%
+mw_raw_nov20 <- mw_raw_nov20 %>%
   distinct(alias) %>%
-  mutate(ID = paste0("P0",sample(n(), n(), replace = FALSE))) %>%
-  left_join(mw_raw, by = "alias")
+  mutate(ID = paste0("P0", sample(n()))) %>%
+  left_join(mw_raw_nov20, by = "alias")
 
-mw_raw <- mw_raw %>%
+mw_raw_nov20 <- mw_raw_nov20 %>%
   relocate(ID, .after = "alias")
 
-mw_raw <- mw_raw %>%
+mw_raw_nov20 <- mw_raw_nov20 %>%
   filter(alias != "Miha")
 
+mw_raw_nov20 %>%
+  summarise(n_distinct(alias))
 
-mw_raw %>%
-  summarise(n_distinct(ID))
-```
-
-# Join with MEQ scores
-
-```{r}
-mw_raw <- mw_raw %>%
-  mutate(alias = case_when(alias == "SE04773179" ~ "GK8QAL",
-                           alias == "SE13778731" ~ 	"XUIU0P",
-                           alias == "SE13772746" ~ 	"IGGVX2",
-                           alias == "Tunde" ~ "K5BBWV",
-                           TRUE ~ alias))
-
-unique_aliases <- mw_raw %>%
+all_aliases <- mw_raw_nov20 %>%
   distinct(alias) %>%
-  pull()
+  pull(alias)
 ```
 
-```{r}
-mw_raw <- questionnaires_meq_sum %>%
-  filter(alias %in% unique_aliases) %>%
-  group_by(alias) %>%
-  slice(1) %>%
-  left_join(mw_raw, by = "alias") %>%
-  relocate(MEQ_total, .after = last_col()) %>%
-  ungroup()
-```
-
-## MEQ grouping
-
-```{r}
-mw_raw <- mw_raw %>%
-  mutate(MEQ_group = case_when(MEQ_total < 30 ~ "Evening",
-                               MEQ_total >= 30 & MEQ_total < 39 ~ "Intermediate",
-                               MEQ_total >= 39 ~ "Morning"))
-
-mw_raw %>% 
-  distinct(alias, MEQ_group) %>%
-  count(MEQ_group)
-```
 
 ## Remove computational rows of data
 
 ```{r}
-mw_raw_computational_to_remove <- mw_raw %>%
+mw_raw_computational_to_remove <- mw_raw_nov20 %>%
   filter(!is.na(timeStampStop) & is.na(mw_binary_yesno))
 
-mw_raw_computational_to_remove %>%
-  count(ID)
+# Checking why there is a mismatch in number of all aliases and aliases in removing items - the reason being that 6 had response rate lower than 10%, and no computations were removed. 2 have only recently started and no computational items were triggered yes
+alias_mw_raw_computational_to_remove <- mw_raw_computational_to_remove %>%
+  distinct(alias) %>%
+  pull(alias)
 
-mw_raw <- anti_join(mw_raw, mw_raw_computational_to_remove)
+diff_aliases <- setdiff(all_aliases,alias_mw_raw_computational_to_remove)
 
-```
+different_aliases <- mw_raw_nov20 %>%
+  filter(alias %in% diff_aliases)
 
-## Samples per participants
-
-3 Participants have 99 samples in total. 3 samples are thus missing due to technical errors.
-
-```{r}
-mw_raw %>%
-  count(ID) %>%
-  count(n)
-```
-
-```{r}
-mw_raw %>%
-  filter(ID == "P055")
+mw_raw_nov20 <- anti_join(mw_raw_nov20, mw_raw_computational_to_remove)
 ```
 
 ## Response rate per participant
 
-Calculate response rate and extract participants with less than 50% response rate to remove them.
+Calculate response rate and extract participants with less than 50% response rate to remove them. For now, remove participants with less than 90 samples - they have not finished yet!
 
 ```{r}
-participants_to_remove <- mw_raw %>%
+participants_to_remove <- mw_raw_nov20 %>%
   group_by(ID) %>%
   summarise(n_samples = n(),
             n_responded = sum(!is.na(mw_binary_yesno)),
             response_rate = n_responded/n_samples) %>%
-  filter(response_rate < 0.5) %>%
+  ungroup() %>%
+  filter(n_samples < 90 | response_rate < 0.5) %>%
   pull(ID)
 ```
+
 
 ## Filter participants below threshold
 
 ```{r}
-mw_raw <- mw_raw %>%
+mw_raw_nov20 <- mw_raw_nov20 %>%
   filter(!ID %in% participants_to_remove)
+```
+Currently 28 participants get removed.
+
+## Samples per participants
+
+Sample count per participant: 
+
+98  samples =	2			
+99  samples =	18			
+100	samples = 151			
+101	samples = 8	
+
+Due to technical issues I suppose, in few cases less samples were sent (20 in total) and in 8 cases 1 more sample was sent.
+
+```{r}
+mw_raw_nov20 %>%
+  count(ID) %>%
+  count(n)
 ```
 
 ### Reponse rate, mind wandering rate per participant.
 
 ```{r}
-mw_raw %>%
+mw_raw_nov20 %>%
   group_by(ID) %>%
   summarise(n_samples = n(),
             n_responded = sum(!is.na(mw_binary_yesno)),
@@ -190,7 +278,7 @@ mw_raw %>%
 ## Convert UNIX time to standardised time format
 
 ```{r}
-mw_raw <- mw_raw %>%
+mw_raw_nov20 <- mw_raw_nov20 %>%
   mutate(
     timeStampSent_std = timestamps_to_datetime(timeStampSent, tz_offset = NULL, force_tz = NULL),
     timeStampStop_std = timestamps_to_datetime(timeStampStop, tz_offset = NULL, force_tz = NULL),
@@ -202,18 +290,18 @@ mw_raw <- mw_raw %>%
 ## Assign measuring dates
 
 ```{r}
-mw_raw <- mw_raw %>%
+mw_raw_nov20 <- mw_raw_nov20 %>%
   mutate(measurement_date = ifelse(format(timeStampSent_std, format = "%H:%M") >= "05:00",
                                    format(timeStampSent_std, format = "%Y-%m-%d"),
                                    format(timeStampSent_std - lubridate::hours(24), format = "%Y-%m-%d")))
 
-mw_raw <- mw_raw %>% relocate(measurement_date, .after=timeStampStop_std)
+mw_raw_nov20 <- mw_raw_nov20 %>% relocate(measurement_date, .after=timeStampStop_std)
 ```
 
 ## Assign measuring days (aka day #)
 
 ```{r}
-mw_raw <- mw_raw %>%
+mw_raw_nov20 <- mw_raw_nov20 %>%
   mutate(measurement_date = as.Date(measurement_date)) %>%
   group_by(ID) %>%
   mutate(measurement_day = as.numeric(measurement_date - min(measurement_date, na.rm = TRUE)) + 1) %>%
@@ -221,13 +309,26 @@ mw_raw <- mw_raw %>%
   relocate(measurement_day, .after = measurement_date)
 ```
 
+## Arrange dataframe 
+Arrange everything according to sample number, namely ID-timestamp sent, so the samples are ordered as they were in time of datacollection (instead f having NAs at the end for example)
+
+```{r}
+mw_raw_nov20 <- mw_raw_nov20 %>%
+  arrange(ID, timeStampSent_std) %>%
+  group_by(ID) %>%
+  mutate(sample_number = 1:n()) %>%
+  relocate(sample_number, .after = ID) %>%
+  ungroup()
+```
+
+
 ## Calculate wake-up and bedtimes
 
 We need to extract wake-up and bedtimes for each day for each participants and join them back to original dataframe. We need to transform them to standardised time (first add midnight time)
 
 ```{r}
-individual_sleep_calculations <- mw_raw %>%
-  distinct(ID, measurement_date, wu_1_time, bed_1_time) %>%
+individual_sleep_calculations <- mw_raw_nov20 %>%
+  distinct(alias, ID, measurement_date, wu_1_time, bed_1_time, sleep_1_time) %>%
   filter(!is.na(wu_1_time)) %>%
   mutate(measurement_date_midnight = as.numeric(as.POSIXct(measurement_date, format = "%Y-%m-%d", tz = "UTC")),
          full_wu_time = wu_1_time + measurement_date_midnight,
@@ -235,6 +336,7 @@ individual_sleep_calculations <- mw_raw %>%
                                                     tz_offset = NULL, 
                                                     force_tz = NULL),
          wu_time_std = format(full_wu_time_std, format = "%H:%M"),
+         
          bedtime_date_midnight = ifelse(bed_1_time > 36000,
             as.numeric(as.POSIXct(measurement_date-1, format = "%Y-%m-%d", tz = "UTC")),
             as.numeric(as.POSIXct(measurement_date, format = "%Y-%m-%d", tz = "UTC"))),
@@ -243,12 +345,28 @@ individual_sleep_calculations <- mw_raw %>%
                                                     tz_offset = NULL, 
                                                     force_tz = NULL),
          bt_time_std = format(full_bt_time_std, format = "%H:%M"),
-            ) %>%
+         
+         sleep_time_date_midnight = ifelse(sleep_1_time > 36000,
+            as.numeric(as.POSIXct(measurement_date-1, format = "%Y-%m-%d", tz = "UTC")),
+            as.numeric(as.POSIXct(measurement_date, format = "%Y-%m-%d", tz = "UTC"))),
+         full_st_time = sleep_1_time + sleep_time_date_midnight,
+         full_st_time_std = timestamps_to_datetime(full_st_time, 
+                                                    tz_offset = NULL, 
+                                                    force_tz = NULL),
+         st_time_std = format(full_st_time_std, format = "%H:%M"),
+         ) %>%
+  
+  
+  
+  
   select(-measurement_date_midnight) %>%
-  mutate(bedtime_int = bed_1_time/3600,
-         sleep_duration = (full_wu_time - full_bt_time)/3600)
+  mutate(sleeptime_int = sleep_1_time/3600,
+         bedtime_int = bed_1_time/3600,
+         sleeptime_int = ifelse(sleeptime_int < bedtime_int, sleeptime_int + 24, sleeptime_int),
+         
+         sleep_duration = (full_wu_time - full_st_time)/3600,
+         sleep_latency = sleeptime_int - bedtime_int)
 
-individual_sleep_calculations
 ```
 
 Based on data inspection I conculde a few things:
@@ -256,67 +374,255 @@ Based on data inspection I conculde a few things:
 -   there seem to be legitimate bedtimes until 10:00 in the morning (used for bedtime midnight calculation)
 -   based on sleep_durations and wu and bt, it seems that some data is faulty - either weirdly similar times are entered (automatic responding?) or bedtimes seem to be entered in 12h instead of 24h format, thus leading to bedtimes such as 12:25 instead od 00:25
 
-Based on this inspection I decide that data with sleep durations higher than 13h and exactly 0h should (perhaps) be removed. These datapoints might have false wake up and bedtimes and could lead to false calculations in relative sample times
+Based on this inspection I decide that data with sleep durations higher than 13h and exactly 0h or less should (perhaps) be removed. These datapoints might have false wake up and bedtimes and could lead to false calculations in relative sample times
 
 ### DF copy
 
 Make a copy of the data here
 
 ```{r}
-mw_raw_copy_1 <- mw_raw
+mw_raw_nov20_copy_1 <- mw_raw_nov20
+mw_raw_nov20 <- mw_raw_nov20_copy_1
 ```
 
 ### Joining sleep calculation data back to original dataframe
+First, remove all unneeded columns:
+```{r}
+mw_raw_nov20 <- mw_raw_nov20 %>%
+  select(-c("connectionId", "legacyCode", "code",  "initials", "accountCode", "scheduledBeepId", "sentBeepId", "reminderForOriginalSentBeepId", "questionListName", "questionListLabel", "fromProtocolName", "timeStampScheduled", "timeStampSent", "originalTimeStampSent", "system_devspecs_devicespecs",                 "system_devspecs_devicespecs-modelAndOs", "sleeping_filled_in_computation", "sleep_data_computation", "samples_yesterday_computation", "how_many_yesterday_computation", "old_date_computation", "condition_wu_computation", "condition_bed_computation", "condition_sleep_computation", "samples_yesterday_check_computation", "var_how_many_yesterday_computation", "label_RN41_basic","how_many_yesterday_computation$2", "label_ZCza_basic", "system_devspecs_devicespecs-system_devspecs", "bed_1_time", "bed_2_time", "sleep_1_time", "sleep_2_time", "wu_1_time", "wu_2_time"))
+
+
+mw_raw_nov20 <- mw_raw_nov20 %>% 
+  left_join(individual_sleep_calculations, by = c("alias","ID", "measurement_date"))
+```
+
 
 ```{r}
-mw_raw$bed_1_time <- NULL
-mw_raw$bed_2_time <- NULL
-mw_raw$wu_1_time <- NULL
-mw_raw$wu_2_time <- NULL
+individual_sleep_calculations %>%
+  filter(ID == "P0117")
+```
 
-mw_raw <- mw_raw %>% 
-  left_join(individual_sleep_calculations, by = c("ID", "measurement_date"))
+
+## Sleep quality 
+```{r}
+daily_sleep_quality <- mw_raw_nov20 %>%
+  filter(!is.na(sleep_quality_sliderNeutralPos)) %>%
+  distinct(alias, ID, measurement_date, sleep_quality_sliderNeutralPos)
+
+mw_raw_nov20 <- mw_raw_nov20 %>% 
+  select(-(sleep_quality_sliderNeutralPos)) %>%
+  left_join(daily_sleep_quality, by = c("alias","ID", "measurement_date"))
 ```
 
 ## Calculating relative sample times
 
 ```{r}
-mw_raw <- mw_raw %>%
+mw_raw_nov20 <- mw_raw_nov20 %>%
   mutate(sample_time = format(timeStampStop_std, format = "%H:%M"),
-         relative_sample_time = (timeStampStop - full_wu_time)/3600)
+         relative_sample_time = (timeStampStop - full_wu_time)/3600,
+         relative_sample_time = round(relative_sample_time))
 
 ```
+
+Inspect relative sample times, that have at least 1 participant. Then remove those in which (times) less than 25% participants have at least one response.
+```{r}
+n_rows <- as.numeric(n_distinct(mw_raw_nov20$ID))
+
+rel_times_to_remove <- mw_raw_nov20 %>%
+  group_by(relative_sample_time) %>%
+  summarise(n_unique_ID = n_distinct(ID)) %>%
+  ungroup() %>%
+  mutate(proportion = n_unique_ID / n_rows) %>%
+  filter(proportion < 0.25 & !(is.na(proportion))) %>%
+  pull(relative_sample_time)
+
+mw_raw_nov20 <- mw_raw_nov20 %>%
+  filter(!relative_sample_time %in% rel_times_to_remove)
+
+```
+17886 total observations, we remove 285. 17628 remain.
+
+Determine samples with negative sleep durations or larger than 14. Based on visual inspection I determine, that they were caused by faulty data entry.
+```{r}
+mw_raw_nov20 %>% 
+  filter(!is.na(timeStampStop)) %>%
+  filter(
+      sleep_duration < 0.01 |
+      sleep_duration > 14)
+```
+
 
 ## Filtering
 
-Filter out:
+Setting values in variable columns to NA where the following conditions are met:
 
--   relative sample times \< 0 & \> 20
--   sleep durations \> 0.01 & \< 14
+-   relative sample times < 0 or > 20
+-   sleep durations < 0.01 or > 14
 
-Total removed (datapoints): 230
+Total removed (datapoints): 911 such rows (variables get transformed to NA)
 
 ```{r}
-mw_clean_dur_rel <- mw_raw %>%
-  filter(sleep_duration < 14 & sleep_duration > 0.01) %>%
-  filter(is.na(relative_sample_time) | relative_sample_time > 0 & relative_sample_time < 20)
+
+variables_to_NA <- c(
+  "aff_smiley", "attention_sliderNegPos","mw_binary_yesno", "stop_act_sliderNegPos", "relax_sliderNeutralPos", "pleasant_sliderNeutralPos", "interesting_sliderNeutralPos","important_sliderNeutralPos", "social_act_sliderNegPos", "physically_sliderNeutralPos", "mentally_sliderNeutralPos", "stress_sliderNeutralPos", "unpleasant_sliderNeutralPos", "bored_sliderNeutralPos", "alert_sliderNeutralPos", "mw_sliderNeutralPos", "aff_thought_smiley", "self_sliderNeutralPos", "others_sliderNeutralPos", "goals_sliderNeutralPos",  "delib_sliderNeutralPos", "past_sliderNeutralPos", "present_sliderNeutralPos", "future_sliderNeutralPos", "vivid_sliderNeutralPos", "productive_sliderNeutralPos", "structure_sliderNeutralPos", "topics_sliderNeutralPos", "environ_sliderNeutralPos", "body_sliderNeutralPos", "wu_1_time", "bed_1_time", "sleep_1_time", "full_wu_time", "full_wu_time_std", "wu_time_std", "bedtime_date_midnight", "full_bt_time", "full_bt_time_std", "bt_time_std", "sleep_time_date_midnight", "full_st_time", "full_st_time_std", "st_time_std", "sleeptime_int", "bedtime_int", "sleep_duration", "sleep_latency", "sleep_quality_sliderNeutralPos", "sample_time", "relative_sample_time"       
+)
+
+mw_raw_nov20 <- mw_raw_nov20 %>%
+  mutate(across(all_of(variables_to_NA), ~ if_else(
+      sleep_duration < 0.01 |
+      sleep_duration > 14 |
+      relative_sample_time < 0 |
+      relative_sample_time > 20,
+    NA,
+    .
+  )))
+
+sum(!is.na(mw_raw_nov20$mw_binary_yesno))
 ```
+
+369 obzervacij spremenjenih v NA.
 
 ## Cleaning variabels column names
 
 ```{r}
-mw_clean_dur_rel <- mw_clean_dur_rel %>% 
-  rename_with(~ str_remove(.x, "_sliderNeutralPos"))
+mw_raw_nov20 <- mw_raw_nov20 %>% 
+  rename_with(~ str_remove(.x, "_sliderNeutralPos")) %>%
+  rename_with(~ str_remove(.x, "_sliderNegPos"))
 ```
-
-# Playing around with data viz
 
 ### Calculate temporal proportions
 
 ```{r}
-mw_clean_dur_rel <- mw_clean_dur_rel %>%
+mw_raw_nov20 <- mw_raw_nov20 %>%
   mutate(total_temporal = future + past + present) %>%
   mutate(future_prop = future/total_temporal,
          present_prop = present/total_temporal,
          past_prop = past/total_temporal)
 ```
+
+
+Create second copy of dataframe
+```{r}
+#mw_raw_nov20_copy_2 <- mw_raw_nov20
+#mw_raw_nov20 <- mw_raw_nov20_copy_2
+```
+
+
+```{r}
+mw_raw_nov20 <- mw_raw_nov20 %>%
+  mutate(alias = case_when(alias == "SE04773179" ~ "GK8QAL",
+                           alias == "SE13778731" ~ 	"XUIU0P",
+                           alias == "SE13772746" ~ 	"IGGVX2",
+                           alias == "Tunde" ~ "K5BBWV",
+                           alias == "9222"  ~ "ABM3GT",
+                           alias ==  "9090" ~ "G1UNGX",
+                           alias ==  "7052" ~ "CAUZN6",
+                           alias ==  "7041" ~ "LZZLUQ",
+                           alias ==  "1013" ~ "A9GALQ",
+                           TRUE ~ alias),
+         alias = toupper(alias))
+
+
+```
+
+**1 participant missing from demographic questionnaires**
+
+```{r}
+mw_raw_nov20_for_joining <- mw_raw_nov20 %>% 
+  select(
+"ID"                                ,
+"alias"                   ,
+"sample_number"           ,
+"measurement_date"                  ,
+"measurement_day"         ,
+"timeStampSent_std"                 ,
+"timeStampStop_std"       ,
+"sample_time"             ,           
+"relative_sample_time" ,
+"full_wu_time_std"                  ,
+"full_bt_time_std"                  ,
+"full_st_time_std"                  ,
+"sleep_latency"           ,
+"sleep_duration"                    ,
+"sleep_quality"                     ,
+"aff_smiley"              ,
+"alert"                   ,
+"bored"                             ,
+"attention"                         ,
+"mw_binary_yesno"         ,
+
+"mw"                      ,
+"aff_thought_smiley"                ,
+"body"                    ,
+"environ"                           ,
+"self"                    ,
+"others"                            ,
+"goals"                   ,
+"productive"              ,
+"delib"                             ,
+"vivid"                             ,
+"structure"                         ,
+"topics"                  ,
+"present"                           ,
+"future"                  ,
+"past"                    ,
+"present_prop" ,
+"future_prop"                       ,
+"past_prop",
+"total_temporal"          ,
+
+"relax"                   ,
+"interesting"             ,
+"mentally"                ,
+"unpleasant"              ,
+"pleasant"                          ,
+"physically"                        ,
+"stress"                            ,
+"important"                         ,
+"stop_act"                          ,
+"social_act"
+  )
+```
+
+
+
+Join datsets with prior questionnaire
+```{r}
+mw_nov20_joined <- mw_raw_nov20_for_joining %>%
+  left_join(reduced_final_questionnaire_df, by = "alias")
+```
+
+
+```{r}
+mw_nov20_joined <- mw_nov20_joined %>%
+  select(-alias) %>%
+  filter(!is.na(MEQ_group))
+```
+
+
+Final participant rate check
+```{r}
+final_ids_to_remove <- mw_nov20_joined %>%
+ group_by(ID) %>%
+  summarise(completed_samples = sum(!is.na(mw_binary_yesno))) %>%
+  filter(completed_samples < 50) %>%
+  pull(ID)
+
+mw_nov20_joined <- mw_nov20_joined %>%
+  filter(!ID %in% final_ids_to_remove)
+```
+
+
+
+```{r}
+write_csv(mw_nov20_joined, "mindwandering_analysis_dataset_20NOV.csv")
+```
+
+
+
+```{r}
+mw_nov20_joined %>%
+  distinct(ID)
+```
+
+
