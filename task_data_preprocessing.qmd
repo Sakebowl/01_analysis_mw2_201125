@@ -1,0 +1,53 @@
+---
+title: "Data preprocessing (November 20)"
+author: "Miha Likar"
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    number-sections: true
+    toc-expand: true
+editor: visual
+---
+
+```{r, message = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(janitor)
+library(mpathr)
+library(psych)
+```
+
+
+## Import the data
+
+```{r}
+task_raw_nov23 <- read_csv2("/Users/Intragalactic/Documents/PhD ELTE/Year 2/Lab/Mind wandering 2 study/Credit point calculation/exports/task_data_NOV23.csv")
+```
+
+
+```{r}
+
+
+task_editing_nov23 <- task_raw_nov23 %>%
+  select(-starts_with("fix_")) %>%
+  select(-ends_with("imageChoice_string")) %>%
+  select(-ends_with("imageChoice_likert")) 
+```
+
+
+
+```{r}
+task_editing_nov23 %>%
+  rowwise() %>%
+  mutate(false_alarms = sum(c_across(contains("_R_")) == 1)) %>%
+  ungroup() %>%
+  filter(GNG_current_time_computation > 6) %>%
+  ggplot(aes(GNG_current_time_computation, false_alarms)) + 
+  stat_summary(geom = "pointrange", fun.data = "mean_cl_boot") + 
+  geom_smooth(method = "loess")
+  theme_minimal()
+
+```
+
+
